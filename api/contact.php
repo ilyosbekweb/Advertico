@@ -1,97 +1,114 @@
 <?php
 declare(strict_types=1);
+
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
+header('Cache-Control: no-store');
 
-function respond(int $status, array $data): never {
+$lang = (($_POST['lang'] ?? '') === 'ru') ? 'ru' : 'uz';
+
+function fail(int $status, string $uz, string $ru): never
+{
+    global $lang;
     http_response_code($status);
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode(['success' => false, 'message' => $lang === 'ru' ? $ru : $uz], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     header('Allow: POST');
-    respond(405, ['success' => false, 'message' => 'Faqat POST so‘rovi qabul qilinadi.']);
+    fail(405, 'Faqat POST so‘rovi qabul qilinadi.', 'Принимаются только POST-запросы.');
 }
 
-// Oddiy bot-spam tuzog‘i: yashirin maydon to‘ldirilgan bo‘lsa, so‘rovni rad etamiz.
+// Bot-spam tuzog'i: yashirin maydon to'ldirilgan bo'lsa, so'rovni rad etamiz.
 if (!empty($_POST['website'])) {
-    respond(400, ['success' => false, 'message' => 'So‘rov rad etildi.']);
+    fail(400, 'So‘rov rad etildi.', 'Запрос отклонён.');
 }
 
 $name = trim((string)($_POST['name'] ?? ''));
 $phone = trim((string)($_POST['phone'] ?? ''));
-$service = trim((string)($_POST['service'] ?? ''));
+$serviceInput = trim((string)($_POST['service'] ?? ''));
 $message = trim((string)($_POST['message'] ?? ''));
 
-if ($name === '' || mb_strlen($name) > 120 || $phone === '' || mb_strlen($phone) > 40) {
-    respond(422, ['success' => false, 'message' => 'Ism va telefon raqamini to‘g‘ri kiriting.']);
+if ($name === '' || mb_strlen($name) > 120 || $phone === '' || mb_strlen($phone) > 40
+    || !preg_match('/^[0-9+()\-\s]{7,40}$/', $phone)) {
+    fail(422, 'Ism va telefon raqamini to‘g‘ri kiriting.', 'Укажите корректные имя и номер телефона.');
 }
-if (mb_strlen($service) > 120 || mb_strlen($message) > 3000) {
-    respond(422, ['success' => false, 'message' => 'Yuborilgan ma’lumot juda uzun.']);
+if (mb_strlen($serviceInput) > 160 || mb_strlen($message) > 3000) {
+    fail(422, 'Yuborilgan ma’lumot juda uzun.', 'Отправленные данные слишком длинные.');
 }
-
-$config = require dirname(__DIR__) . '/config.php';
-$db = $config['db'];
 
 try {
-    $dsn = sprintf('mysql:host=%s;dbname=%s;charset=%s', $db['host'], $db['name'], $db['charset']);
-    $pdo = new PDO($dsn, $db['user'], $db['pass'], [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES => false,
-    ]);
+    require dirname(__DIR__) . '/app/bootstrap.php';
+    $pdo = db();
+    $ip = client_ip();
 
-    $stmt = $pdo->prepare('INSERT INTO applications (name, phone, service, message, ip_address) VALUES (:name, :phone, :service, :message, :ip)');
+    // Rate limiting: bitta IP'dan bir soatda N tadan ortiq ariza qabul qilinmaydi.
+    $limit = max(1, (int)setting('rate_limit_per_hour', '5'));
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM applications WHERE ip_address = :ip AND created_at > (NOW() - INTERVAL 1 HOUR)');
+    $stmt->execute([':ip' => $ip]);
+    if ((int)$stmt->fetchColumn() >= $limit) {
+        fail(429, 'Juda ko‘p so‘rov yuborildi. Iltimos, keyinroq urinib ko‘ring yoki qo‘ng‘iroq qiling.', 'Слишком много заявок. Попробуйте позже или позвоните нам.');
+    }
+
+    // Xizmat: yangi forma slug yuboradi; eski forma (keshdagi sahifa) nom yuborishi mumkin.
+    $serviceId = null;
+    $serviceName = $serviceInput;
+    if ($serviceInput !== '') {
+        $stmt = $pdo->prepare('SELECT id, name_uz FROM services WHERE slug = :s OR name_uz = :n OR name_ru = :r LIMIT 1');
+        $stmt->execute([':s' => $serviceInput, ':n' => $serviceInput, ':r' => $serviceInput]);
+        if ($service = $stmt->fetch()) {
+            $serviceId = (int)$service['id'];
+            $serviceName = (string)$service['name_uz'];
+        }
+    }
+
+    // Reklama joyi: faqat nashr qilingan joy qabul qilinadi. Yaroqsiz ID bo'lsa ham ariza yo'qolmaydi —
+    // joy bog'lanmasdan saqlanadi.
+    $location = null;
+    $locationInput = trim((string)($_POST['location_id'] ?? ''));
+    if ($locationInput !== '' && ctype_digit($locationInput)) {
+        $location = AdLocations::findPublished((int)$locationInput);
+        if ($location && $serviceId === null && $location['service_id'] !== null) {
+            $stmt = $pdo->prepare('SELECT id, name_uz FROM services WHERE id = :id');
+            $stmt->execute([':id' => $location['service_id']]);
+            if ($service = $stmt->fetch()) {
+                $serviceId = (int)$service['id'];
+                $serviceName = (string)$service['name_uz'];
+            }
+        }
+    }
+
+    $stmt = $pdo->prepare('INSERT INTO applications (name, phone, service, service_id, location_id, message, lang, ip_address, user_agent)
+        VALUES (:name, :phone, :service, :service_id, :location_id, :message, :lang, :ip, :ua)');
     $stmt->execute([
-        ':name' => $name,
-        ':phone' => $phone,
-        ':service' => $service,
-        ':message' => $message,
-        ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+        ':name'       => $name,
+        ':phone'      => $phone,
+        ':service'    => mb_substr($serviceName, 0, 160),
+        ':service_id' => $serviceId,
+        ':location_id' => $location ? (int)$location['id'] : null,
+        ':message'    => $message,
+        ':lang'       => $lang,
+        ':ip'         => $ip,
+        ':ua'         => mb_substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
     ]);
     $applicationId = (int)$pdo->lastInsertId();
 } catch (Throwable $e) {
-    error_log('Advertico DB error: ' . $e->getMessage());
-    respond(500, ['success' => false, 'message' => 'Server xatosi. Keyinroq qayta urinib ko‘ring.']);
+    error_log('Advertico contact error: ' . $e->getMessage());
+    fail(500, 'Server xatosi. Keyinroq qayta urinib ko‘ring.', 'Ошибка сервера. Попробуйте позже.');
 }
 
-$telegram = $config['telegram'];
+// Murojaat bazaga saqlandi; Telegram sozlanmagan yoki ishlamasa ham yo'qolmaydi.
 $telegramSent = false;
-if (!empty($telegram['bot_token']) && !empty($telegram['chat_id']) &&
-    $telegram['bot_token'] !== 'PASTE_TELEGRAM_BOT_TOKEN_HERE' &&
-    $telegram['chat_id'] !== 'PASTE_ADMIN_CHAT_ID_HERE') {
-
-    $text = "🆕 <b>Yangi murojaat — Advertico</b>\n\n"
-        . "🆔 Raqam: #{$applicationId}\n"
-        . "👤 Ism: " . htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n"
-        . "📞 Telefon: " . htmlspecialchars($phone, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n"
-        . "🛠 Xizmat: " . htmlspecialchars($service, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\n"
-        . "💬 Xabar: " . htmlspecialchars($message !== '' ? $message : 'Kiritilmagan', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-
-    $payload = http_build_query([
-        'chat_id' => $telegram['chat_id'],
-        'text' => $text,
-        'parse_mode' => 'HTML',
-    ]);
-    $ch = curl_init('https://api.telegram.org/bot' . $telegram['bot_token'] . '/sendMessage');
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => 10,
-    ]);
-    $telegramResponse = curl_exec($ch);
-    $curlError = curl_error($ch);
-    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    $telegramData = is_string($telegramResponse) ? json_decode($telegramResponse, true) : null;
-    $telegramSent = !$curlError && $httpCode === 200 && !empty($telegramData['ok']);
-    if (!$telegramSent) {
-        error_log('Advertico Telegram error: ' . ($curlError ?: (string)$telegramResponse));
+if (Telegram::isEnabled()) {
+    $telegramSent = Telegram::send(Telegram::applicationMessage([
+        'id' => $applicationId, 'name' => $name, 'phone' => $phone, 'service' => $serviceName, 'message' => $message,
+        'location_id' => $location['id'] ?? null, 'location_name' => $location['name_uz'] ?? null,
+        'lat' => $location['lat'] ?? null, 'lng' => $location['lng'] ?? null,
+    ]));
+    if ($telegramSent) {
+        db()->prepare('UPDATE applications SET telegram_sent = 1 WHERE id = :id')->execute([':id' => $applicationId]);
     }
 }
 
-// Murojaat bazaga saqlandi; Telegram sozlanmagan yoki vaqtincha ishlamasa ham yo‘qolmaydi.
-respond(200, ['success' => true, 'telegram_sent' => $telegramSent]);
+echo json_encode(['success' => true, 'telegram_sent' => $telegramSent], JSON_UNESCAPED_UNICODE);

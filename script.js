@@ -93,6 +93,19 @@
     }
   };
 
+  // Admin paneldan boshqariladigan ma'lumotlar (render.php sahifaga #site-data sifatida joylaydi).
+  // Ma'lumot bo'lmasa yuqoridagi standart qiymatlar ishlatiladi.
+  var siteData = (function () {
+    var element = document.getElementById('site-data');
+    if (!element) return {};
+    try {
+      return JSON.parse(element.textContent) || {};
+    } catch (error) {
+      return {};
+    }
+  })();
+  if (siteData.services && Object.keys(siteData.services).length) serviceCatalog = siteData.services;
+
   function initCursorBackground() {
     if (!window.matchMedia('(pointer: fine)').matches ||
         window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -302,6 +315,14 @@
         : (language === 'uz' ? 'Tungi rejimga oʻtish' : 'Переключить на ночную тему'));
     }
     document.documentElement.lang = language;
+    document.documentElement.classList.remove('i18n-pending');
+    if (siteData.seo) {
+      if (siteData.seo.title && siteData.seo.title[language]) document.title = siteData.seo.title[language];
+      var metaDescription = $('meta[name="description"]');
+      if (metaDescription && siteData.seo.description && siteData.seo.description[language]) {
+        metaDescription.setAttribute('content', siteData.seo.description[language]);
+      }
+    }
     if (activeServiceId) renderServiceDetail(activeServiceId);
     if (renderSelectedDistrict) renderSelectedDistrict();
   }
@@ -328,15 +349,18 @@
       zarbdor: { name: { uz: 'Zarbdor tumani', ru: 'Зарбдорский район' }, number: '12' },
       zomin: { name: { uz: 'Zomin tumani', ru: 'Зааминский район' }, number: '13' }
     };
+    if (siteData.districts && Object.keys(siteData.districts).length) districts = siteData.districts;
+    var defaultDescription = siteData.districtDefault || {
+      uz: 'Ushbu hudud bo‘yicha reklama formatlari va mavjud joylar haqida batafsil maʼlumot olish uchun biz bilan bog‘laning.',
+      ru: 'Свяжитесь с нами, чтобы узнать о рекламных форматах и доступных местах в этом районе.'
+    };
     function selectDistrict(districtId) {
       var district = districts[districtId];
       if (!district) return;
       activeDistrictId = districtId;
       title.textContent = district.name[language];
       index.textContent = district.number;
-      description.textContent = language === 'uz'
-        ? 'Ushbu hudud bo‘yicha reklama formatlari va mavjud joylar haqida batafsil maʼlumot olish uchun biz bilan bog‘laning.'
-        : 'Свяжитесь с нами, чтобы узнать о рекламных форматах и доступных местах в этом районе.';
+      description.textContent = (district.description && district.description[language]) || defaultDescription[language];
       $$('.map-marker', map).forEach(function (marker) {
         var active = marker.dataset.district === districtId;
         var markerDistrict = districts[marker.dataset.district];
@@ -671,6 +695,12 @@
         projectTitle.dataset.uz = label ? label.dataset.uz : tile.textContent.trim();
         projectTitle.dataset.ru = label ? label.dataset.ru : tile.textContent.trim();
         projectTitle.textContent = projectTitle.getAttribute('data-' + language);
+        var projectDescription = $('#project-desc');
+        if (projectDescription) {
+          projectDescription.dataset.uz = tile.dataset.descUz || projectDescription.dataset.defaultUz || projectDescription.dataset.uz;
+          projectDescription.dataset.ru = tile.dataset.descRu || tile.dataset.descUz || projectDescription.dataset.defaultRu || projectDescription.dataset.ru;
+          projectDescription.textContent = projectDescription.getAttribute('data-' + language);
+        }
         modal.classList.add('open');
       });
     });
@@ -738,6 +768,176 @@
       mockup.style.transform = 'rotateY(' + x + 'deg) rotateX(' + y + 'deg)';
     });
   }
+
+  /* ===================== Dizayn 2026: header, LED ekran, slayderlar ===================== */
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function initHeaderState() {
+    var header = $('#site-header');
+    if (!header) return;
+    var update = function () { header.classList.toggle('is-scrolled', window.scrollY > 8); };
+    window.addEventListener('scroll', update, { passive: true });
+    update();
+  }
+
+  function initLedScreen() {
+    var canvas = $('[data-led]');
+    if (!canvas) return;
+    var context = canvas.getContext('2d');
+    if (!context) return;
+    var gap = 7;
+    var levels = 14;
+    var width = 0;
+    var height = 0;
+    var frame = 0;
+    var visible = true;
+    var lastDraw = 0;
+    var palette = [];
+    for (var level = 0; level < levels; level += 1) {
+      var t = level / (levels - 1);
+      palette.push('rgba(' + Math.round(20 + 164 * t * t) + ',' + Math.round(70 + 162 * t) + ',' + Math.round(55 + 66 * t) + ',' + (0.18 + 0.82 * t).toFixed(2) + ')');
+    }
+
+    function resize() {
+      var ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+      width = canvas.offsetWidth;
+      height = canvas.offsetHeight;
+      canvas.width = Math.max(1, Math.round(width * ratio));
+      canvas.height = Math.max(1, Math.round(height * ratio));
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function draw(time) {
+      var cols = Math.ceil(width / gap);
+      var rows = Math.ceil(height / gap);
+      var buckets = [];
+      for (var b = 0; b < levels; b += 1) buckets.push([]);
+      context.fillStyle = '#020604';
+      context.fillRect(0, 0, width, height);
+      var sweep = (time * 0.00012) % 1.4 - 0.2;
+      for (var i = 0; i < cols; i += 1) {
+        for (var j = 0; j < rows; j += 1) {
+          var value = Math.sin(i * 0.17 + time * 0.0011) + Math.sin(j * 0.23 - time * 0.0008) + Math.sin((i + j) * 0.085 + time * 0.0005);
+          var n = (value + 3) / 6;
+          n = Math.pow(n, 1.6);
+          var band = 1 - Math.min(1, Math.abs(i / cols - sweep) * 7);
+          if (band > 0) n = Math.min(1, n + band * 0.35);
+          buckets[Math.min(levels - 1, Math.floor(n * levels))].push(i * gap + 1.5, j * gap + 1.5);
+        }
+      }
+      for (var k = 0; k < levels; k += 1) {
+        var points = buckets[k];
+        if (!points.length) continue;
+        context.fillStyle = palette[k];
+        context.beginPath();
+        for (var p = 0; p < points.length; p += 2) context.rect(points[p], points[p + 1], 3.2, 3.2);
+        context.fill();
+      }
+      var vignette = context.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, width * 0.55);
+      vignette.addColorStop(0, 'rgba(2,6,4,.6)');
+      vignette.addColorStop(0.55, 'rgba(2,6,4,.15)');
+      vignette.addColorStop(1, 'rgba(2,6,4,0)');
+      context.fillStyle = vignette;
+      context.fillRect(0, 0, width, height);
+    }
+
+    function loop(time) {
+      frame = 0;
+      if (!visible || document.hidden) return;
+      if (time - lastDraw > 33) {
+        draw(time);
+        lastDraw = time;
+      }
+      frame = window.requestAnimationFrame(loop);
+    }
+
+    function start() {
+      if (reduceMotion) { draw(4000); return; }
+      if (!frame) frame = window.requestAnimationFrame(loop);
+    }
+
+    resize();
+    draw(4000);
+    window.addEventListener('resize', function () { resize(); draw(lastDraw || 4000); });
+    document.addEventListener('visibilitychange', start);
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        visible = entries[0].isIntersecting;
+        if (visible) start();
+      }).observe(canvas.closest('[data-scene]') || canvas);
+    }
+    start();
+  }
+
+  function initTracks() {
+    $$('[data-track]').forEach(function (track) {
+      var nav = $('[data-track-nav="' + track.dataset.track + '"]');
+      if (!nav) return;
+      var previous = $('[data-prev]', nav);
+      var next = $('[data-next]', nav);
+      var step = function () {
+        var item = track.firstElementChild;
+        var gapSize = parseFloat(window.getComputedStyle(track).columnGap) || 16;
+        return item ? item.getBoundingClientRect().width + gapSize : track.clientWidth * 0.8;
+      };
+      var update = function () {
+        var max = track.scrollWidth - track.clientWidth - 2;
+        nav.style.visibility = max <= 0 ? 'hidden' : '';
+        previous.disabled = track.scrollLeft <= 2;
+        next.disabled = track.scrollLeft >= max;
+      };
+      previous.addEventListener('click', function () { track.scrollBy({ left: -step(), behavior: reduceMotion ? 'auto' : 'smooth' }); });
+      next.addEventListener('click', function () { track.scrollBy({ left: step(), behavior: reduceMotion ? 'auto' : 'smooth' }); });
+      track.addEventListener('scroll', update, { passive: true });
+      window.addEventListener('resize', update);
+      update();
+    });
+  }
+
+  function initSceneParallax() {
+    var scene = $('[data-scene]');
+    var hero = scene ? scene.closest('.x-hero') : null;
+    if (!scene || !hero || reduceMotion || !window.matchMedia('(pointer: fine)').matches) return;
+    var pending = false;
+    var x = 0;
+    var y = 0;
+    hero.addEventListener('pointermove', function (event) {
+      x = (event.clientX / window.innerWidth - 0.5) * 2;
+      y = (event.clientY / window.innerHeight - 0.5) * 2;
+      if (pending) return;
+      pending = true;
+      window.requestAnimationFrame(function () {
+        scene.style.setProperty('--px', x.toFixed(3));
+        scene.style.setProperty('--py', y.toFixed(3));
+        pending = false;
+      });
+    });
+    hero.addEventListener('pointerleave', function () {
+      scene.style.setProperty('--px', '0');
+      scene.style.setProperty('--py', '0');
+    });
+  }
+
+  function initSectionIndex() {
+    var links = $$('.x-index a');
+    if (!links.length || !('IntersectionObserver' in window)) return;
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        links.forEach(function (link) { link.classList.toggle('on', link.getAttribute('href') === '#' + entry.target.id); });
+      });
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    links.forEach(function (link) {
+      var target = document.getElementById(link.getAttribute('href').slice(1));
+      if (target) observer.observe(target);
+    });
+  }
+
+  initHeaderState();
+  initLedScreen();
+  initTracks();
+  initSceneParallax();
+  initSectionIndex();
 
   initCursorBackground();
   applyLanguage();

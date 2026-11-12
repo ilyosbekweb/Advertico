@@ -3,6 +3,9 @@
 !.env.example
 config.php
 node_modules/
-vendor/
+/vendor/
 *.log
 database.sql
+# Admin panel
+uploads/*
+!uploads/.htaccess
