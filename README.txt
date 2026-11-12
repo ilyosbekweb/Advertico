@@ -1,14 +1,8 @@
 Advertico website
 
-Sayt sahifalari:
-index.html — Bosh sahifa
-about.html — Biz haqimizda
-services.html — Xizmatlar
-portfolio.html — Portfolio
-clients.html — Mijozlar
-locations.html — Lokatsiyalar
-contact.html — Aloqa
+Sahifalar: index, about, services, portfolio (clients.html → portfolio), locations, contact.
+Barcha matnlar, xizmatlar, narxlar, portfolio, jamoa, statistika, tumanlar, SEO va kontaktlar
+admin panel (/admin/) orqali tahrirlanadi — HTML fayllarni qo'lda tahrirlash shart emas.
 
-Sahifalarni brauzerda oching. Barcha HTML fayllar style.css, script.js va assets/ papkasi bilan bir joyda turishi kerak.
-Matnlarni tegishli HTML faylda tahrirlang. O‘zbekcha matn data-uz atributida, ruscha tarjima data-ru atributida turadi.
-script.js sahifalararo yuklanish, menyular, til va mavzu almashtirish, portfolio va aloqa formasini boshqaradi.
+Dizayn: style.css, animatsiyalar va til/mavzu: script.js, aloqa formasi: backend.js.
+O'rnatish va backend haqida: BACKEND-README.txt
